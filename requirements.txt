@@ -1,1 +1,1 @@
-streamlit pandas requests matplotlib numpy openpyxl altair pydeck
+streamlit pandas requests matplotlib
