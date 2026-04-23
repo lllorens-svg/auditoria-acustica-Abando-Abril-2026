@@ -33,7 +33,6 @@ COLORES = {
     'Dia': '#f39c12',      # Naranja para gráfico
     'Noche': '#3498db'     # Azul para gráfico
 }
-
 def limpiar_texto(texto):
     import unicodedata
     if not isinstance(texto, str): return texto
