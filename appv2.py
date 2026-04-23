@@ -55,23 +55,40 @@ def sombreado_finde(ax, start, end):
 
 def main():
     st.sidebar.header("⚙️ Configuración Auditoría")
-    
-    @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
     def load_data():
+        # La URL sigue siendo la misma
         url = "https://www.bilbao.eus/aytoonline/jsp/opendata/movilidad/od_sonometro_mediciones.jsp?idioma=c&formato=csv"
-        r = requests.get(url)
-        df = pd.read_csv(StringIO(r.text), sep=';', encoding='utf-8-sig')
-        df.columns = [limpiar_texto(c) for c in df.columns]
         
-        c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA', 'FECHA_HORA'] if c in df.columns)
-        c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ', 'VALOR'] if c in df.columns)
-        c_id = next(c for c in ['CODIGO', 'ID_SONOMETRO', 'NOMBRE'] if c in df.columns)
+        # ESTO ES LO IMPORTANTE: Engañamos al servidor para que nos deje pasar
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
         
-        df['FECHA_DT'] = pd.to_datetime(df[c_t], format='mixed', dayfirst=True)
-        df['DECIBELIOS'] = pd.to_numeric(df[c_v].astype(str).str.replace(',', '.'), errors='coerce')
-        df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
-        return df, c_id
-
+        try:
+            # Hacemos la petición con los headers y un tiempo límite
+            r = requests.get(url, headers=headers, timeout=30)
+            r.raise_for_status() # Si hay error, saltará al except
+            
+            # Leemos el contenido
+            df = pd.read_csv(StringIO(r.text), sep=';', encoding='utf-8-sig')
+            df.columns = [limpiar_texto(c) for c in df.columns]
+            
+            # Buscamos las columnas (tu lógica de antes)
+            c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA', 'FECHA_HORA'] if c in df.columns)
+            c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ', 'VALOR'] if c in df.columns)
+            c_id = next(c for c in ['CODIGO', 'ID_SONOMETRO', 'NOMBRE'] if c in df.columns)
+            
+            df['FECHA_DT'] = pd.to_datetime(df[c_t], format='mixed', dayfirst=True)
+            df['DECIBELIOS'] = pd.to_numeric(df[c_v].astype(str).str.replace(',', '.'), errors='coerce')
+            df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
+            
+            return df, c_id
+            
+        except Exception as e:
+            st.error(f"❌ Error al conectar con el servidor de Bilbao: {e}")
+            st.info("Intenta refrescar la página en unos minutos. A veces el servidor de Open Data bloquea conexiones temporales.")
+            st.stop()    
     try:
         df_raw, c_id = load_data()
         
