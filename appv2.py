@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta
+import time
 
 # Configuración de página
 st.set_page_config(page_title="Auditoría Acústica Bilbao - Abando", layout="wide")
@@ -53,35 +54,63 @@ def sombreado_finde(ax, start, end):
             ax.axvspan(curr, curr + timedelta(days=1), color=color, alpha=0.1)
         curr += timedelta(days=1)
 
-@st.cache_data(ttl=3600)
+def get_fallback_data():
+    """Genera datos sintéticos si el servidor de Bilbao no responde."""
+    st.warning("⚠️ El servidor de Bilbao no responde. Cargando datos de emergencia para demostración.")
+    dates = pd.date_range(end=datetime.now(), periods=500, freq='15min')
+    data = {
+        'FECHA/HORA MEDICION': [d.strftime('%d/%m/%Y %H:%M:%S') for d in dates],
+        'DECIBELIOS MEDIDOS': np.random.uniform(50, 75, size=500),
+        'CODIGO': [np.random.choice(list(SENSORES_ABANDO.keys())) for _ in range(500)]
+    }
+    df = pd.DataFrame(data)
+    return df, 'CODIGO'
+
+@st.cache_data(ttl=600)
 def load_data():
-    """Descarga datos con User-Agent para evitar bloqueos del servidor."""
+    """Descarga datos con User-Agent y sistema de reintentos."""
     url = "https://www.bilbao.eus/aytoonline/jsp/opendata/movilidad/od_sonometro_mediciones.jsp?idioma=c&formato=csv"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-    try:
-        r = requests.get(url, headers=headers, timeout=30)
-        r.raise_for_status()
-        df = pd.read_csv(StringIO(r.text), sep=';', encoding='utf-8-sig')
-        df.columns = [limpiar_texto(c) for c in df.columns]
-        
-        c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA', 'FECHA_HORA'] if c in df.columns)
-        c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ', 'VALOR'] if c in df.columns)
-        c_id = next(c for c in ['CODIGO', 'ID_SONOMETRO', 'NOMBRE'] if c in df.columns)
-        
-        df['FECHA_DT'] = pd.to_datetime(df[c_t], format='mixed', dayfirst=True)
-        df['DECIBELIOS'] = pd.to_numeric(df[c_v].astype(str).str.replace(',', '.'), errors='coerce')
-        df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
-        return df, c_id
-    except Exception as e:
-        st.error(f"Error crítico conectando con Open Data Bilbao: {e}")
-        st.stop()
+    
+    retries = 3
+    for i in range(retries):
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            df = pd.read_csv(StringIO(r.text), sep=';', encoding='utf-8-sig')
+            df.columns = [limpiar_texto(c) for c in df.columns]
+            
+            c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA', 'FECHA_HORA'] if c in df.columns)
+            c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ', 'VALOR'] if c in df.columns)
+            c_id = next(c for c in ['CODIGO', 'ID_SONOMETRO', 'NOMBRE'] if c in df.columns)
+            
+            df['FECHA_DT'] = pd.to_datetime(df[c_t], format='mixed', dayfirst=True)
+            df['DECIBELIOS'] = pd.to_numeric(df[c_v].astype(str).str.replace(',', '.'), errors='coerce')
+            df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
+            return df, c_id
+        except Exception as e:
+            if i < retries - 1:
+                time.sleep(2 ** i) # Espera 1s, luego 2s...
+                continue
+            else:
+                return get_fallback_data()
 
 def main():
     st.sidebar.header("⚙️ Configuración Auditoría")
     df_raw, c_id = load_data()
     
+    # Procesar fechas tras carga (por si es fallback)
+    if 'FECHA_DT' not in df_raw.columns:
+        c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA', 'FECHA_HORA'] if c in df_raw.columns)
+        df_raw['FECHA_DT'] = pd.to_datetime(df_raw[c_t], format='mixed', dayfirst=True)
+    if 'DECIBELIOS' not in df_raw.columns:
+        c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ', 'VALOR'] if c in df_raw.columns)
+        df_raw['DECIBELIOS'] = pd.to_numeric(df_raw[c_v].astype(str).str.replace(',', '.'), errors='coerce')
+    if 'PERIODO' not in df_raw.columns:
+        df_raw['PERIODO'] = df_raw['FECHA_DT'].apply(clasificar_periodo)
+
     f_min, f_max = df_raw['FECHA_DT'].min().date(), df_raw['FECHA_DT'].max().date()
     f_ini = st.sidebar.date_input("Fecha Inicio", f_max - timedelta(days=7), min_value=f_min, max_value=f_max)
     f_fin = st.sidebar.date_input("Fecha Fin", f_max, min_value=f_min, max_value=f_max)
