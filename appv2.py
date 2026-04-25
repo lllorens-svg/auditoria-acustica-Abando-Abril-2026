@@ -135,9 +135,9 @@ def main():
     df_sel = df_abando[mask].sort_values('FECHA_DT')
     
     # --- INTERFAZ DE PESTAÑAS ---
-    tab_cal, tab_ana, tab_rank = st.tabs(["🛡️ Control de Calidad", "📉 Análisis Temporal", "🏆 Rankings"])
+    tab_cal, tab_ana, tab_rank = st.tabs(["🛡️ Auditoría de Integridad", "📉 Análisis Temporal", "🏆 Rankings"])
 
-    # 1. PESTAÑA: CONTROL DE CALIDAD (AUDITORÍA DE INTEGRIDAD)
+    # 1. PESTAÑA: AUDITORÍA DE INTEGRIDAD DE LA RED
     with tab_cal:
         st.header("🛡️ Auditoría de Integridad de la Red (Abando)")
         dias_auditoria = (rango[1] - rango[0]).days + 1 if isinstance(rango, (list, tuple)) and len(rango) == 2 else 1
@@ -187,7 +187,7 @@ def main():
             st.pyplot(fig_b)
 
         st.markdown("---")
-        st.subheader("Detalle del Inventario")
+        st.subheader("Detalle del Inventario de Sensores")
         st.dataframe(df_q, use_container_width=True, hide_index=True)
 
     # 2. PESTAÑA: ANÁLISIS TEMPORAL
