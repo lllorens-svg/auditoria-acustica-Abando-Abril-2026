@@ -113,39 +113,42 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.subheader("🎯 Panel de Control")
     
-    # Filtros de Fecha
+    # Filtros de Fecha (Siempre visibles)
     f_min, f_max = df_abando['FECHA_DT'].min().date(), df_abando['FECHA_DT'].max().date()
     rango = st.sidebar.date_input("Rango de fechas de auditoría:", [f_min, f_max])
-    
-    # Selector de Sonómetro individual
-    sonometros_activos = sorted(df_abando[col_id].unique())
-    if not sonometros_activos:
-        st.error("No se han detectado sensores de Abando en el archivo cargado.")
-        return
-        
-    sel_nombre = st.sidebar.selectbox("Foco en Calle:", 
-                                    [f"{SENSORES_ABANDO[s]} ({s})" for s in sonometros_activos])
-    sel_id = sel_nombre.split('(')[-1].strip(')')
-
-    # Aplicar filtros al DataFrame de trabajo
-    mask = (df_abando[col_id] == sel_id)
-    if isinstance(rango, (list, tuple)) and len(rango) == 2:
-        mask &= (df_abando['FECHA_DT'].dt.date >= rango[0]) & (df_abando['FECHA_DT'].dt.date <= rango[1])
-    
-    df_sel = df_abando[mask].sort_values('FECHA_DT')
     
     # --- INTERFAZ DE PESTAÑAS ---
     tab_cal, tab_ana, tab_rank = st.tabs(["🛡️ Auditoría de Integridad", "📉 Análisis Temporal", "🏆 Rankings"])
 
+    # Lógica de visibilidad del selector de sonómetros
+    sel_id = None
+    if not tab_cal: # Solo mostrar selector si no estamos en la pestaña de integridad
+        sonometros_activos = sorted(df_abando[col_id].unique())
+        if sonometros_activos:
+            sel_nombre = st.sidebar.selectbox("Foco en Calle:", 
+                                            [f"{SENSORES_ABANDO[s]} ({s})" for s in sonometros_activos])
+            sel_id = sel_nombre.split('(')[-1].strip(')')
+    
+    # Si estamos en las otras pestañas necesitamos el sel_id
+    # Para simplificar Streamlit y evitar errores de estado, lo definimos siempre pero lo ocultamos condicionalmente
+    # Sin embargo, como el usuario pide explícitamente quitar el despliegue cuando se refleja calidad:
+    
     # 1. PESTAÑA: AUDITORÍA DE INTEGRIDAD DE LA RED
     with tab_cal:
-        st.header("🛡️ Auditoría de Integridad de la Red (Abando)")
+        fecha_inicio_str = rango[0].strftime('%d/%m/%Y') if isinstance(rango, (list, tuple)) else f_min.strftime('%d/%m/%Y')
+        fecha_fin_str = rango[1].strftime('%d/%m/%Y') if isinstance(rango, (list, tuple)) and len(rango) > 1 else f_max.strftime('%d/%m/%Y')
+        
+        st.header(f"🛡️ Auditoría de Integridad de la Red (Abando): {fecha_inicio_str} - {fecha_fin_str}")
+        
         dias_auditoria = (rango[1] - rango[0]).days + 1 if isinstance(rango, (list, tuple)) and len(rango) == 2 else 1
         objetivo_lecturas = dias_auditoria * 96 # Mediciones cada 15 min
         
         calidad_stats = []
         for sid, name in SENSORES_ABANDO.items():
             ds_sensor = df_abando[df_abando[col_id] == sid]
+            if isinstance(rango, (list, tuple)) and len(rango) == 2:
+                ds_sensor = ds_sensor[(ds_sensor['FECHA_DT'].dt.date >= rango[0]) & (ds_sensor['FECHA_DT'].dt.date <= rango[1])]
+            
             count = len(ds_sensor)
             perc = min(100.0, (count / objetivo_lecturas) * 100) if objetivo_lecturas > 0 else 0
             
@@ -168,7 +171,6 @@ def main():
         
         with c1:
             st.subheader("Estado General de la Red")
-            # Forzamos orden para que los colores coincidan
             df_pie = df_q['Estado'].value_counts().reindex(['Bueno', 'Regular', 'Sin Datos'], fill_value=0)
             fig_p, ax_p = plt.subplots(figsize=(6,6))
             ax_p.pie(df_pie, labels=df_pie.index, autopct='%1.1f%%', 
@@ -192,11 +194,24 @@ def main():
 
     # 2. PESTAÑA: ANÁLISIS TEMPORAL
     with tab_ana:
-        st.header(f"Evolución: {SENSORES_ABANDO[sel_id]}")
+        # Aquí sí necesitamos el selector, lo ponemos dentro de la pestaña para que no moleste en la de Integridad
+        sonometros_activos = sorted(df_abando[col_id].unique())
+        sel_nombre_ana = st.selectbox("Seleccionar Sensor para Detalle:", 
+                                        [f"{SENSORES_ABANDO[s]} ({s})" for s in sonometros_activos],
+                                        key="sel_ana")
+        sel_id_ana = sel_nombre_ana.split('(')[-1].strip(')')
+        
+        st.header(f"Evolución: {SENSORES_ABANDO[sel_id_ana]}")
+        
+        mask = (df_abando[col_id] == sel_id_ana)
+        if isinstance(rango, (list, tuple)) and len(rango) == 2:
+            mask &= (df_abando['FECHA_DT'].dt.date >= rango[0]) & (df_abando['FECHA_DT'].dt.date <= rango[1])
+        
+        df_sel = df_abando[mask].sort_values('FECHA_DT')
+
         if df_sel.empty:
             st.warning("Sin registros para los filtros seleccionados.")
         else:
-            # Re-muestreo para suavizar y manejar huecos
             df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
             df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
             
@@ -231,8 +246,13 @@ def main():
         st.header("🏆 Puntos Críticos (Máximos por Periodo)")
         
         resumen_picos = []
+        # Aplicar filtro de fecha global también a los rankings
+        df_rank_data = df_abando.copy()
+        if isinstance(rango, (list, tuple)) and len(rango) == 2:
+            df_rank_data = df_rank_data[(df_rank_data['FECHA_DT'].dt.date >= rango[0]) & (df_rank_data['FECHA_DT'].dt.date <= rango[1])]
+
         for sid, calle in SENSORES_ABANDO.items():
-            ds = df_abando[df_abando[col_id] == sid]
+            ds = df_rank_data[df_rank_data[col_id] == sid]
             if not ds.empty:
                 for p in ['DIA', 'NOCHE']:
                     sub = ds[ds['PERIODO'] == p]
@@ -247,7 +267,7 @@ def main():
                         })
         
         if not resumen_picos:
-            st.info("Carga datos para generar los rankings.")
+            st.info("No hay datos en el rango seleccionado para generar los rankings.")
         else:
             df_picos = pd.DataFrame(resumen_picos)
             col_r1, col_r2 = st.columns(2)
