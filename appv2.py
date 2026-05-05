@@ -1,4 +1,4 @@
-import streamlit as st
+mport streamlit as st
 import pandas as pd
 import requests
 from io import StringIO
@@ -10,7 +10,7 @@ import unicodedata
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
-    page_title="Auditoría Acústica Bilbao - Panel Unificado", 
+    page_title="Auditoría Acústica Bilbao - Abando", 
     page_icon="🔊",
     layout="wide"
 )
@@ -30,257 +30,200 @@ SENSORES_ABANDO = {
     'BI-RUI-C034': 'ARETXABALETA 6', 'BI-RUI-P009': 'ALAMEDA RECALDE'
 }
 
-COLORES = {
-    'Bueno': '#22c55e',    
-    'Regular': '#f97316',  
-    'Sin Datos': '#94a3b8', 
-    'Dia': '#f39c12',      
-    'Noche': '#3498db'     
-}
+# --- FUNCIONES DE UTILIDAD ---
 
-# --- FUNCIONES DE SOPORTE ---
 def limpiar_texto(texto):
-    if not isinstance(texto, str): return str(texto)
-    return "".join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn').strip().upper()
+    if not isinstance(texto, str): return texto
+    texto = unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode("utf-8")
+    return texto.strip().upper()
 
 def clasificar_periodo(dt):
+    if not isinstance(dt, datetime): return "N/A"
     return "DIA" if 7 <= dt.hour < 23 else "NOCHE"
 
-def sombreado_finde(ax, start, end):
-    """Sombreado para Viernes noche y fines de semana."""
-    curr = start.replace(hour=0, minute=0, second=0)
-    while curr <= end:
-        if curr.weekday() in [4, 5, 6]: # Vie, Sab, Dom
-            color = '#e74c3c' if curr.weekday() == 4 else '#f1c40f'
-            ax.axvspan(curr, curr + timedelta(days=1), color=color, alpha=0.08)
-        curr += timedelta(days=1)
+# --- GENERACIÓN DE GRÁFICOS ---
 
-@st.cache_data(ttl=600)
-def download_api_data():
-    url = "https://www.bilbao.eus/aytoonline/jsp/opendata/movilidad/od_sonometro_mediciones.jsp?idioma=c&formato=csv"
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            return response.text
-    except:
-        pass
-    return None
+def generar_grafico_unico(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
+    fig, ax = plt.subplots(figsize=(12, 6))
+    # Remuestreo para detectar huecos (NaN)
+    df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
+    df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
 
-def procesar_datos(csv_txt):
-    try:
-        df = pd.read_csv(StringIO(csv_txt), sep=';', encoding='utf-8-sig')
-        df.columns = [limpiar_texto(c) for c in df.columns]
-        
-        # Mapeo flexible de nombres de columnas
-        c_id = next(c for c in df.columns if any(x in c for x in ['CODIGO', 'ID', 'NOMBRE']))
-        c_val = next(c for c in df.columns if any(x in c for x in ['DECIBELIOS', 'VALOR', 'LAEQ']))
-        c_time = next(c for c in df.columns if any(x in c for x in ['FECHA', 'HORA', 'MEDICION']))
+    # Dibujar línea tramo a tramo para cambiar color según periodo
+    for i in range(len(df_plot)-1):
+        p1, p2 = df_plot.iloc[i], df_plot.iloc[i+1]
+        color = '#f39c12' if p1['PERIODO'] == 'DIA' else '#3498db'
+        if pd.notna(p1['DECIBELIOS']) and pd.notna(p2['DECIBELIOS']):
+            ax.plot([p1['FECHA_DT'], p2['FECHA_DT']], [p1['DECIBELIOS'], p2['DECIBELIOS']], color=color, linewidth=2)
 
-        df['DB'] = pd.to_numeric(df[c_val].astype(str).str.replace(',', '.'), errors='coerce')
-        df['FECHA_DT'] = pd.to_datetime(df[c_time], errors='coerce', dayfirst=True)
-        
-        df = df.dropna(subset=['FECHA_DT', 'DB', c_id])
-        df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
-        return df, c_id
-    except Exception as e:
-        st.error(f"Error procesando el formato del archivo: {e}")
-        return None, None
+    ax.axhline(65, color='red', linestyle='--', alpha=0.6, label="Límite Día (65dB)")
+    ax.axhline(55, color='blue', linestyle='--', alpha=0.6, label="Límite Noche (55dB)")
+
+    f_str = f"{f_ini_dt.strftime('%d/%m/%Y')} - {f_fin_dt.strftime('%d/%m/%Y')}"
+    ax.set_title(f"{nombre_calle} ({id_sensor})\nPeriodo de Auditoría: {f_str}", fontsize=11)
+    ax.set_ylabel("Decibelios (dB)", fontsize=16)
+    ax.set_ylim(40, 95)
+    ax.grid(True, alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+    plt.xticks(rotation=45)
+    return fig
+
+def generar_grafico_dual(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
+    df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
+
+    f_str = f"{f_ini_dt.strftime('%d/%m/%Y')} - {f_fin_dt.strftime('%d/%m/%Y')}"
+
+    # Panel Día
+    df_dia = df_plot.copy()
+    df_dia.loc[df_dia['PERIODO'] != 'DIA', 'DECIBELIOS'] = np.nan
+    ax1.plot(df_dia['FECHA_DT'], df_dia['DECIBELIOS'], color='#f39c12')
+    ax1.axhline(65, color='red', linestyle='-', alpha=0.8)
+    ax1.set_title(f"Periodo Diurno - {nombre_calle} ({id_sensor}) | {f_str}", fontsize=11)
+    ax1.set_ylabel("dB", fontsize=16)
+    ax1.set_ylim(40, 95)
+    ax1.grid(True, alpha=0.2)
+
+    # Panel Noche
+    df_noche = df_plot.copy()
+    df_noche.loc[df_noche['PERIODO'] != 'NOCHE', 'DECIBELIOS'] = np.nan
+    ax2.plot(df_noche['FECHA_DT'], df_noche['DECIBELIOS'], color='#3498db')
+    ax2.axhline(55, color='red', linestyle='-', alpha=0.8)
+    ax2.set_title(f"Periodo Nocturno - {nombre_calle} ({id_sensor})", fontsize=11)
+    ax2.set_ylabel("dB", fontsize=16)
+    ax2.set_ylim(40, 95)
+    ax2.grid(True, alpha=0.2)
+
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
+
+# --- APLICACIÓN PRINCIPAL ---
 
 def main():
-    st.sidebar.title("📁 Gestión de Datos")
-    opcion = st.sidebar.radio("Fuente de entrada:", ["Descarga Online (API)", "Subida Manual (CSV)"])
-    
-    raw_data = None
-    if opcion == "Descarga Online (API)":
-        raw_data = download_api_data()
-        if not raw_data: st.sidebar.warning("API no disponible en este momento.")
-    else:
-        file = st.sidebar.file_uploader("Subir archivo CSV", type=['csv'])
-        if file: raw_data = file.getvalue().decode('utf-8-sig', errors='ignore')
+    @st.cache_data(ttl=3600)
+    def load_data():
+        url = "https://www.bilbao.eus/aytoonline/jsp/opendata/movilidad/od_sonometro_mediciones.jsp?idioma=c&formato=csv"
+        r = requests.get(url)
+        df = pd.read_csv(StringIO(r.text), sep=';', encoding='utf-8-sig')
+        df.columns = [limpiar_texto(c) for c in df.columns]
+        c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA'] if c in df.columns)
+        c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ'] if c in df.columns)
+        c_id = next(c for c in ['CODIGO', 'ID_SONOMETRO'] if c in df.columns)
+        
+        df['FECHA_DT'] = pd.to_datetime(df[c_t], format='mixed', dayfirst=True)
+        df['DECIBELIOS'] = pd.to_numeric(df[c_v].astype(str).str.replace(',', '.'), errors='coerce')
+        df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
+        return df, c_id
 
-    if not raw_data:
-        st.title("🔊 Auditoría Acústica Bilbao")
-        st.info("Carga datos para comenzar el análisis del Distrito de Abando.")
-        return
+    try:
+        df_raw, c_id = load_data()
+        
+        st.sidebar.header("⚙️ Configuración")
+        f_min, f_max = df_raw['FECHA_DT'].min().date(), df_raw['FECHA_DT'].max().date()
+        f_ini = st.sidebar.date_input("Fecha Inicio", f_max - timedelta(days=7), min_value=f_min, max_value=f_max)
+        f_fin = st.sidebar.date_input("Fecha Fin", f_max, min_value=f_min, max_value=f_max)
+        
+        f_ini_dt = datetime.combine(f_ini, datetime.min.time())
+        f_fin_dt = datetime.combine(f_fin, datetime.max.time())
+        df_f = df_raw[(df_raw['FECHA_DT'] >= f_ini_dt) & (df_raw['FECHA_DT'] <= f_fin_dt)].copy()
+        
+        dias_totales = (f_fin - f_ini).days + 1
+        sel_id = st.sidebar.selectbox(
+            "Selecciona Sonómetro", 
+            list(SENSORES_ABANDO.keys()), 
+            format_func=lambda x: f"{SENSORES_ABANDO[x]} ({x})"
+        )
 
-    df_full, col_id = procesar_datos(raw_data)
-    if df_full is None: return
+        tabs = st.tabs(["📉 Análisis Temporal", "🛡️ Auditoría de Calidad", "🏆 Rankings"])
 
-    # Filtrado por zona Abando (diccionario maestro)
-    df_abando = df_full[df_full[col_id].isin(SENSORES_ABANDO.keys())].copy()
-    
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🎯 Panel de Control")
-    
-    # Filtros de Fecha (Siempre visibles)
-    f_min, f_max = df_abando['FECHA_DT'].min().date(), df_abando['FECHA_DT'].max().date()
-    rango = st.sidebar.date_input("Rango de fechas de auditoría:", [f_min, f_max])
-    
-    # --- INTERFAZ DE PESTAÑAS ---
-    tab_cal, tab_ana, tab_rank = st.tabs(["🛡️ Auditoría de Integridad", "📉 Análisis Temporal", "🏆 Rankings"])
+        with tabs[0]:
+            st.title(f"🔊 {SENSORES_ABANDO[sel_id]} ({sel_id})")
+            st.markdown(f"**Periodo de Auditoría:** {f_ini.strftime('%d/%m/%Y')} al {f_fin.strftime('%d/%m/%Y')}")
+            sub_s = df_f[df_f[c_id] == sel_id]
+            if sub_s.empty:
+                st.error("⚠️ ESTE SONÓMETRO NO TIENE DATOS REGISTRADOS EN EL RANGO SELECCIONADO.")
+            else:
+                if dias_totales <= 3:
+                    fig = generar_grafico_unico(sub_s, SENSORES_ABANDO[sel_id], sel_id, f_ini_dt, f_fin_dt)
+                else:
+                    fig = generar_grafico_dual(sub_s, SENSORES_ABANDO[sel_id], sel_id, f_ini_dt, f_fin_dt)
+                st.pyplot(fig)
 
-    # Lógica de visibilidad del selector de sonómetros
-    sel_id = None
-    if not tab_cal: # Solo mostrar selector si no estamos en la pestaña de integridad
-        sonometros_activos = sorted(df_abando[col_id].unique())
-        if sonometros_activos:
-            sel_nombre = st.sidebar.selectbox("Foco en Calle:", 
-                                            [f"{SENSORES_ABANDO[s]} ({s})" for s in sonometros_activos])
-            sel_id = sel_nombre.split('(')[-1].strip(')')
-    
-    # Si estamos en las otras pestañas necesitamos el sel_id
-    # Para simplificar Streamlit y evitar errores de estado, lo definimos siempre pero lo ocultamos condicionalmente
-    # Sin embargo, como el usuario pide explícitamente quitar el despliegue cuando se refleja calidad:
-    
-    # 1. PESTAÑA: AUDITORÍA DE INTEGRIDAD DE LA RED
-    with tab_cal:
-        fecha_inicio_str = rango[0].strftime('%d/%m/%Y') if isinstance(rango, (list, tuple)) else f_min.strftime('%d/%m/%Y')
-        fecha_fin_str = rango[1].strftime('%d/%m/%Y') if isinstance(rango, (list, tuple)) and len(rango) > 1 else f_max.strftime('%d/%m/%Y')
-        
-        st.header(f"🛡️ Auditoría de Integridad de la Red (Abando): {fecha_inicio_str} - {fecha_fin_str}")
-        
-        dias_auditoria = (rango[1] - rango[0]).days + 1 if isinstance(rango, (list, tuple)) and len(rango) == 2 else 1
-        objetivo_lecturas = dias_auditoria * 96 # Mediciones cada 15 min
-        
-        calidad_stats = []
-        for sid, name in SENSORES_ABANDO.items():
-            ds_sensor = df_abando[df_abando[col_id] == sid]
-            if isinstance(rango, (list, tuple)) and len(rango) == 2:
-                ds_sensor = ds_sensor[(ds_sensor['FECHA_DT'].dt.date >= rango[0]) & (ds_sensor['FECHA_DT'].dt.date <= rango[1])]
+        with tabs[1]:
+            st.header("🛡️ Auditoría de Calidad")
+            calidad_info = []
+            color_map = {"Bueno": "#2ecc71", "Regular": "#f1c40f", "Sin Datos": "#e74c3c"}
             
-            count = len(ds_sensor)
-            perc = min(100.0, (count / objetivo_lecturas) * 100) if objetivo_lecturas > 0 else 0
+            for sid, calle in SENSORES_ABANDO.items():
+                data_sensor = df_f[df_f[c_id] == sid]
+                # Esperamos 96 registros cada 24h (uno cada 15 min)
+                esperado = dias_totales * 96
+                porc = min(round((len(data_sensor) / esperado) * 100, 1), 100.0) if esperado > 0 else 0
+                est = "Bueno" if porc >= 90 else ("Regular" if porc > 0 else "Sin Datos")
+                calidad_info.append({
+                    'Calle': calle, 
+                    'ID': sid, 
+                    'Calidad %': porc, 
+                    'Estado': est, 
+                    'Color': color_map[est]
+                })
             
-            if perc >= 85: estado = "Bueno"
-            elif perc > 5: estado = "Regular"
-            else: estado = "Sin Datos"
+            # Ordenar estrictamente de mejor a peor para el gráfico y tabla
+            df_q = pd.DataFrame(calidad_info).sort_values('Calidad %', ascending=False)
             
-            calidad_stats.append({
-                'Calle': name, 
-                'ID': sid, 
-                'Disponibilidad %': round(perc, 1), 
-                'Registros': count,
-                'Estado': estado
-            })
-        
-        df_q = pd.DataFrame(calidad_stats)
-        
-        # Visualización de la Auditoría
-        c1, c2 = st.columns([1, 1.5])
-        
-        with c1:
-            st.subheader("Estado General de la Red")
-            df_pie = df_q['Estado'].value_counts().reindex(['Bueno', 'Regular', 'Sin Datos'], fill_value=0)
-            fig_p, ax_p = plt.subplots(figsize=(6,6))
-            ax_p.pie(df_pie, labels=df_pie.index, autopct='%1.1f%%', 
-                    colors=[COLORES['Bueno'], COLORES['Regular'], COLORES['Sin Datos']],
-                    startangle=140, wedgeprops={'edgecolor': 'white'})
-            st.pyplot(fig_p)
+            col1, col2 = st.columns([1, 1.2])
+            with col1:
+                st.subheader("Estado General de la Red")
+                counts = df_q['Estado'].value_counts()
+                # Asegurar que los colores coinciden con las etiquetas presentes
+                colors_pie = [color_map[label] for label in counts.index]
+                fig_p, ax_p = plt.subplots()
+                ax_p.pie(counts, labels=counts.index, autopct='%1.1f%%', colors=colors_pie, startangle=90)
+                ax_p.set_title("Auditoría de Calidad", fontsize=12)
+                st.pyplot(fig_p)
             
-        with c2:
-            st.subheader("% Disponibilidad por Sensor")
-            df_q_sorted = df_q.sort_values('Disponibilidad %', ascending=True)
-            fig_b, ax_b = plt.subplots(figsize=(8, 11))
-            colors_list = [COLORES.get(s, '#7f8c8d') for s in df_q_sorted['Estado']]
-            ax_b.barh(df_q_sorted['Calle'], df_q_sorted['Disponibilidad %'], color=colors_list)
-            ax_b.set_xlim(0, 100)
-            ax_b.grid(axis='x', linestyle='--', alpha=0.6)
-            st.pyplot(fig_b)
+            with col2:
+                st.subheader("Disponibilidad por Sonómetro")
+                fig_b, ax_b = plt.subplots(figsize=(7, 12))
+                ax_b.barh(df_q['Calle'], df_q['Calidad %'], color=df_q['Color'])
+                ax_b.set_title("Auditoría de Calidad (Bueno a Malo)", fontsize=11)
+                ax_b.set_xlabel("% de Información Recibida", fontsize=12)
+                ax_b.tick_params(axis='y', labelsize=8)
+                ax_b.invert_yaxis() # Los mejores arriba
+                st.pyplot(fig_b)
+            
+            st.markdown("**Desglose Detallado**")
+            st.dataframe(df_q[['Calle', 'ID', 'Calidad %', 'Estado']], hide_index=True, use_container_width=True)
 
-        st.markdown("---")
-        st.subheader("Detalle del Inventario de Sensores")
-        st.dataframe(df_q, use_container_width=True, hide_index=True)
+        with tabs[2]:
+            st.header("🏆 Rankings de Ruido (Valores Máximos)")
+            metrics = []
+            for sid, calle in SENSORES_ABANDO.items():
+                ds = df_f[df_f[c_id] == sid]
+                if not ds.empty:
+                    m_d = ds[ds['PERIODO'] == 'DIA']['DECIBELIOS'].max()
+                    m_n = ds[ds['PERIODO'] == 'NOCHE']['DECIBELIOS'].max()
+                    metrics.append({'Calle': calle, 'Max Día (dB)': m_d, 'Max Noche (dB)': m_n})
+            
+            df_m = pd.DataFrame(metrics)
+            if not df_m.empty:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.subheader("☀️ Top 10 - Diurno")
+                    df_top_d = df_m.sort_values('Max Día (dB)', ascending=False).head(10)
+                    st.dataframe(df_top_d[['Calle', 'Max Día (dB)']], hide_index=True, use_container_width=True)
+                with c2:
+                    st.subheader("🌙 Top 10 - Nocturno")
+                    df_top_n = df_m.sort_values('Max Noche (dB)', ascending=False).head(10)
+                    st.dataframe(df_top_n[['Calle', 'Max Noche (dB)']], hide_index=True, use_container_width=True)
+            else:
+                st.info("No hay mediciones suficientes para generar rankings.")
 
-    # 2. PESTAÑA: ANÁLISIS TEMPORAL
-    with tab_ana:
-        # Aquí sí necesitamos el selector, lo ponemos dentro de la pestaña para que no moleste en la de Integridad
-        sonometros_activos = sorted(df_abando[col_id].unique())
-        sel_nombre_ana = st.selectbox("Seleccionar Sensor para Detalle:", 
-                                        [f"{SENSORES_ABANDO[s]} ({s})" for s in sonometros_activos],
-                                        key="sel_ana")
-        sel_id_ana = sel_nombre_ana.split('(')[-1].strip(')')
-        
-        st.header(f"Evolución: {SENSORES_ABANDO[sel_id_ana]}")
-        
-        mask = (df_abando[col_id] == sel_id_ana)
-        if isinstance(rango, (list, tuple)) and len(rango) == 2:
-            mask &= (df_abando['FECHA_DT'].dt.date >= rango[0]) & (df_abando['FECHA_DT'].dt.date <= rango[1])
-        
-        df_sel = df_abando[mask].sort_values('FECHA_DT')
-
-        if df_sel.empty:
-            st.warning("Sin registros para los filtros seleccionados.")
-        else:
-            df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
-            df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
-            
-            fig_t, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-            
-            # Panel Día
-            df_dia = df_plot.copy(); df_dia.loc[df_dia['PERIODO'] != 'DIA', 'DB'] = np.nan
-            ax1.plot(df_dia['FECHA_DT'], df_dia['DB'], color=COLORES['Dia'], label='Nivel Día', linewidth=1.8)
-            ax1.axhline(65, color='red', linestyle='--', alpha=0.8, label='Límite 65dB')
-            ax1.set_title("Periodo Diurno (07:00 - 23:00)")
-            ax1.set_ylim(40, 90)
-            ax1.set_ylabel("Decibelios (dB)")
-            sombreado_finde(ax1, df_plot['FECHA_DT'].min(), df_plot['FECHA_DT'].max())
-            ax1.legend(loc='upper right')
-            
-            # Panel Noche
-            df_noc = df_plot.copy(); df_noc.loc[df_noc['PERIODO'] != 'NOCHE', 'DB'] = np.nan
-            ax2.plot(df_noc['FECHA_DT'], df_noc['DB'], color=COLORES['Noche'], label='Nivel Noche', linewidth=1.8)
-            ax2.axhline(55, color='blue', linestyle='--', alpha=0.8, label='Límite 55dB')
-            ax2.set_title("Periodo Nocturno (23:00 - 07:00)")
-            ax2.set_ylim(40, 90)
-            ax2.set_ylabel("Decibelios (dB)")
-            sombreado_finde(ax2, df_plot['FECHA_DT'].min(), df_plot['FECHA_DT'].max())
-            ax2.legend(loc='upper right')
-            
-            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
-            plt.xticks(rotation=45)
-            st.pyplot(fig_t)
-
-    # 3. PESTAÑA: RANKINGS (PUNTOS CRÍTICOS)
-    with tab_rank:
-        st.header("🏆 Puntos Críticos (Máximos por Periodo)")
-        
-        resumen_picos = []
-        # Aplicar filtro de fecha global también a los rankings
-        df_rank_data = df_abando.copy()
-        if isinstance(rango, (list, tuple)) and len(rango) == 2:
-            df_rank_data = df_rank_data[(df_rank_data['FECHA_DT'].dt.date >= rango[0]) & (df_rank_data['FECHA_DT'].dt.date <= rango[1])]
-
-        for sid, calle in SENSORES_ABANDO.items():
-            ds = df_rank_data[df_rank_data[col_id] == sid]
-            if not ds.empty:
-                for p in ['DIA', 'NOCHE']:
-                    sub = ds[ds['PERIODO'] == p]
-                    if not sub.empty:
-                        idx_max = sub['DB'].idxmax()
-                        resumen_picos.append({
-                            'Ubicación': calle,
-                            'Código': sid,
-                            'Periodo': p,
-                            'Pico dB': round(sub.loc[idx_max, 'DB'], 1),
-                            'Momento del Pico': sub.loc[idx_max, 'FECHA_DT'].strftime('%d/%m %H:%M')
-                        })
-        
-        if not resumen_picos:
-            st.info("No hay datos en el rango seleccionado para generar los rankings.")
-        else:
-            df_picos = pd.DataFrame(resumen_picos)
-            col_r1, col_r2 = st.columns(2)
-            
-            with col_r1:
-                st.subheader("☀️ Top 10 Ruidosos (Día)")
-                top_d = df_picos[df_picos['Periodo'] == 'DIA'].sort_values('Pico dB', ascending=False).head(10)
-                st.dataframe(top_d[['Ubicación', 'Pico dB', 'Momento del Pico']], hide_index=True, use_container_width=True)
-                
-            with col_r2:
-                st.subheader("🌙 Top 10 Ruidosos (Noche)")
-                top_n = df_picos[df_picos['Periodo'] == 'NOCHE'].sort_values('Pico dB', ascending=False).head(10)
-                st.dataframe(top_n[['Ubicación', 'Pico dB', 'Momento del Pico']], hide_index=True, use_container_width=True)
+    except Exception as e:
+        st.error(f"Se ha producido un error al cargar los datos: {e}")
 
 if __name__ == "__main__":
     main()
