@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- DICCIONARIO MAESTRO: 32 SENSORES DE ABANDO ---
+# --- DICCIONARIO MAESTRO: 32 SENSORES DE ABANDO (SEGÚN TU TABLA) ---
 SENSORES_ABANDO = {
     'BI-RUI-001': 'RODRIGUEZ ARIAS', 'BI-RUI-020': 'POZA 48', 'BI-RUI-021': 'POZA 53',
     'BI-RUI-022': 'POZA 30', 'BI-RUI-025': 'PRINCIPE 1', 'BI-RUI-BR15': 'ALAMEDA URQUIJO',
@@ -45,11 +45,9 @@ def clasificar_periodo(dt):
 
 def generar_grafico_unico(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
     fig, ax = plt.subplots(figsize=(12, 6))
-    # Remuestreo para detectar huecos (NaN)
     df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
     df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
 
-    # Dibujar línea tramo a tramo para cambiar color según periodo
     for i in range(len(df_plot)-1):
         p1, p2 = df_plot.iloc[i], df_plot.iloc[i+1]
         color = '#f39c12' if p1['PERIODO'] == 'DIA' else '#3498db'
@@ -72,10 +70,9 @@ def generar_grafico_dual(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
     df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
     df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
-
     f_str = f"{f_ini_dt.strftime('%d/%m/%Y')} - {f_fin_dt.strftime('%d/%m/%Y')}"
 
-    # Panel Día
+    # Día
     df_dia = df_plot.copy()
     df_dia.loc[df_dia['PERIODO'] != 'DIA', 'DECIBELIOS'] = np.nan
     ax1.plot(df_dia['FECHA_DT'], df_dia['DECIBELIOS'], color='#f39c12')
@@ -85,7 +82,7 @@ def generar_grafico_dual(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
     ax1.set_ylim(40, 95)
     ax1.grid(True, alpha=0.2)
 
-    # Panel Noche
+    # Noche
     df_noche = df_plot.copy()
     df_noche.loc[df_noche['PERIODO'] != 'NOCHE', 'DECIBELIOS'] = np.nan
     ax2.plot(df_noche['FECHA_DT'], df_noche['DECIBELIOS'], color='#3498db')
@@ -103,10 +100,12 @@ def generar_grafico_dual(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
 # --- APLICACIÓN PRINCIPAL ---
 
 def main():
-    @st.cache_data(ttl=3600)
+    st.title("🔊 Auditoría Acústica Bilbao - Abando")
+    
+    @st.cache_data(ttl=600)
     def load_data():
         url = "https://www.bilbao.eus/aytoonline/jsp/opendata/movilidad/od_sonometro_mediciones.jsp?idioma=c&formato=csv"
-        r = requests.get(url)
+        r = requests.get(url, timeout=20)
         df = pd.read_csv(StringIO(r.text), sep=';', encoding='utf-8-sig')
         df.columns = [limpiar_texto(c) for c in df.columns]
         c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA'] if c in df.columns)
@@ -119,9 +118,11 @@ def main():
         return df, c_id
 
     try:
-        df_raw, c_id = load_data()
+        with st.spinner('Accediendo a Open Data Bilbao...'):
+            df_raw, c_id = load_data()
         
-        st.sidebar.header("⚙️ Configuración")
+        # Sidebar filtros
+        st.sidebar.header("🗓️ Rango de Auditoría")
         f_min, f_max = df_raw['FECHA_DT'].min().date(), df_raw['FECHA_DT'].max().date()
         f_ini = st.sidebar.date_input("Fecha Inicio", f_max - timedelta(days=7), min_value=f_min, max_value=f_max)
         f_fin = st.sidebar.date_input("Fecha Fin", f_max, min_value=f_min, max_value=f_max)
@@ -131,20 +132,19 @@ def main():
         df_f = df_raw[(df_raw['FECHA_DT'] >= f_ini_dt) & (df_raw['FECHA_DT'] <= f_fin_dt)].copy()
         
         dias_totales = (f_fin - f_ini).days + 1
-        sel_id = st.sidebar.selectbox(
-            "Selecciona Sonómetro", 
-            list(SENSORES_ABANDO.keys()), 
-            format_func=lambda x: f"{SENSORES_ABANDO[x]} ({x})"
-        )
-
+        
         tabs = st.tabs(["📉 Análisis Temporal", "🛡️ Auditoría de Calidad", "🏆 Rankings"])
 
         with tabs[0]:
-            st.title(f"🔊 {SENSORES_ABANDO[sel_id]} ({sel_id})")
-            st.markdown(f"**Periodo de Auditoría:** {f_ini.strftime('%d/%m/%Y')} al {f_fin.strftime('%d/%m/%Y')}")
+            sel_id = st.selectbox("Selecciona Sonómetro de Abando", 
+                                 list(SENSORES_ABANDO.keys()), 
+                                 format_func=lambda x: f"{SENSORES_ABANDO[x]} ({x})")
+            
+            st.subheader(f"Ubicación: {SENSORES_ABANDO[sel_id]} ({sel_id})")
             sub_s = df_f[df_f[c_id] == sel_id]
+            
             if sub_s.empty:
-                st.error("⚠️ ESTE SONÓMETRO NO TIENE DATOS REGISTRADOS EN EL RANGO SELECCIONADO.")
+                st.error("⚠️ ESTE SONÓMETRO NO TIENE DATOS REGISTRADOS. El Ayuntamiento no está capturando información de este punto.")
             else:
                 if dias_totales <= 3:
                     fig = generar_grafico_unico(sub_s, SENSORES_ABANDO[sel_id], sel_id, f_ini_dt, f_fin_dt)
@@ -153,77 +153,60 @@ def main():
                 st.pyplot(fig)
 
         with tabs[1]:
-            st.header("🛡️ Auditoría de Calidad")
+            st.header("🛡️ Auditoría de Calidad de la Red")
             calidad_info = []
             color_map = {"Bueno": "#2ecc71", "Regular": "#f1c40f", "Sin Datos": "#e74c3c"}
             
             for sid, calle in SENSORES_ABANDO.items():
                 data_sensor = df_f[df_f[c_id] == sid]
-                # Esperamos 96 registros cada 24h (uno cada 15 min)
                 esperado = dias_totales * 96
                 porc = min(round((len(data_sensor) / esperado) * 100, 1), 100.0) if esperado > 0 else 0
                 est = "Bueno" if porc >= 90 else ("Regular" if porc > 0 else "Sin Datos")
-                calidad_info.append({
-                    'Calle': calle, 
-                    'ID': sid, 
-                    'Calidad %': porc, 
-                    'Estado': est, 
-                    'Color': color_map[est]
-                })
+                calidad_info.append({'Calle': calle, 'ID': sid, 'Calidad %': porc, 'Estado': est, 'Color': color_map[est]})
             
-            # Ordenar estrictamente de mejor a peor para el gráfico y tabla
             df_q = pd.DataFrame(calidad_info).sort_values('Calidad %', ascending=False)
             
-            col1, col2 = st.columns([1, 1.2])
-            with col1:
-                st.subheader("Estado General de la Red")
+            c1, c2 = st.columns([1, 1.2])
+            with c1:
+                st.markdown("**Estado de la Red de Abando**")
                 counts = df_q['Estado'].value_counts()
-                # Asegurar que los colores coinciden con las etiquetas presentes
-                colors_pie = [color_map[label] for label in counts.index]
                 fig_p, ax_p = plt.subplots()
-                ax_p.pie(counts, labels=counts.index, autopct='%1.1f%%', colors=colors_pie, startangle=90)
-                ax_p.set_title("Auditoría de Calidad", fontsize=12)
+                ax_p.pie(counts, labels=counts.index, autopct='%1.1f%%', colors=[color_map[x] for x in counts.index], startangle=90)
                 st.pyplot(fig_p)
             
-            with col2:
-                st.subheader("Disponibilidad por Sonómetro")
-                fig_b, ax_b = plt.subplots(figsize=(7, 12))
+            with c2:
+                st.markdown("**Disponibilidad por Ubicación**")
+                fig_b, ax_b = plt.subplots(figsize=(7, 10))
                 ax_b.barh(df_q['Calle'], df_q['Calidad %'], color=df_q['Color'])
-                ax_b.set_title("Auditoría de Calidad (Bueno a Malo)", fontsize=11)
-                ax_b.set_xlabel("% de Información Recibida", fontsize=12)
+                ax_b.invert_yaxis()
                 ax_b.tick_params(axis='y', labelsize=8)
-                ax_b.invert_yaxis() # Los mejores arriba
                 st.pyplot(fig_b)
             
-            st.markdown("**Desglose Detallado**")
             st.dataframe(df_q[['Calle', 'ID', 'Calidad %', 'Estado']], hide_index=True, use_container_width=True)
 
         with tabs[2]:
-            st.header("🏆 Rankings de Ruido (Valores Máximos)")
+            st.header("🏆 Rankings de Ruido Máximo")
             metrics = []
             for sid, calle in SENSORES_ABANDO.items():
                 ds = df_f[df_f[c_id] == sid]
                 if not ds.empty:
                     m_d = ds[ds['PERIODO'] == 'DIA']['DECIBELIOS'].max()
                     m_n = ds[ds['PERIODO'] == 'NOCHE']['DECIBELIOS'].max()
-                    metrics.append({'Calle': calle, 'Max Día (dB)': m_d, 'Max Noche (dB)': m_n})
+                    metrics.append({'Calle': calle, 'Máx Día (dB)': m_d, 'Máx Noche (dB)': m_n})
             
-            df_m = pd.DataFrame(metrics)
-            if not df_m.empty:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.subheader("☀️ Top 10 - Diurno")
-                    df_top_d = df_m.sort_values('Max Día (dB)', ascending=False).head(10)
-                    st.dataframe(df_top_d[['Calle', 'Max Día (dB)']], hide_index=True, use_container_width=True)
-                with c2:
-                    st.subheader("🌙 Top 10 - Nocturno")
-                    df_top_n = df_m.sort_values('Max Noche (dB)', ascending=False).head(10)
-                    st.dataframe(df_top_n[['Calle', 'Max Noche (dB)']], hide_index=True, use_container_width=True)
-            else:
-                st.info("No hay mediciones suficientes para generar rankings.")
+            if metrics:
+                df_m = pd.DataFrame(metrics)
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    st.subheader("☀️ Top Diurno")
+                    st.dataframe(df_m.sort_values('Máx Día (dB)', ascending=False).head(10)[['Calle', 'Máx Día (dB)']], hide_index=True)
+                with col_r2:
+                    st.subheader("🌙 Top Nocturno")
+                    st.dataframe(df_m.sort_values('Máx Noche (dB)', ascending=False).head(10)[['Calle', 'Máx Noche (dB)']], hide_index=True)
 
     except Exception as e:
-        st.error(f"Se ha producido un error al cargar los datos: {e}")
+        st.error(f"Error de conexión o datos: {e}")
+        st.info("El servidor de Open Data Bilbao podría estar saturado. Por favor, recarga la página en unos segundos.")
 
 if __name__ == "__main__":
     main()
