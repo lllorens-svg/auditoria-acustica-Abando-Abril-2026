@@ -183,17 +183,20 @@
             const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(URL_CSV)}`;
             try {
                 const response = await fetch(proxy);
+                if (!response.ok) throw new Error('Error en respuesta');
                 const csvText = await response.text();
                 processCSV(csvText);
                 updateIndicator('success');
             } catch (e) {
+                console.error(e);
                 updateIndicator('error');
-                alert("Error de conexión. Intente cargar el archivo manualmente.");
+                // No usamos alert() por compatibilidad con el entorno
             }
             setLoading(false);
         }
 
         function processCSV(text) {
+            if (!text || text.length < 50) return;
             const rows = text.split(/\r?\n/);
             const delimiter = rows[0].includes(';') ? ';' : ',';
             const headers = rows[0].split(delimiter).map(h => h.trim().toUpperCase());
@@ -228,8 +231,12 @@
         }
 
         function refreshUI() {
-            const start = luxon.DateTime.fromISO(document.getElementById('dateStart').value).startOf('day');
-            const end = luxon.DateTime.fromISO(document.getElementById('dateEnd').value).endOf('day');
+            const startStr = document.getElementById('dateStart').value;
+            const endStr = document.getElementById('dateEnd').value;
+            if (!startStr || !endStr) return;
+
+            const start = luxon.DateTime.fromISO(startStr).startOf('day');
+            const end = luxon.DateTime.fromISO(endStr).endOf('day');
             const filtered = mediciones.filter(m => m.dt >= start && m.dt <= end);
             
             updateQuality(filtered);
@@ -271,16 +278,19 @@
 
         function updateSensorList(data) {
             const sel = document.getElementById('sensorSelector');
+            const currentVal = sel.value;
             const ids = [...new Set(data.map(m => m.id))];
             sel.innerHTML = '<option value="">Seleccione una calle...</option>';
             ids.forEach(id => {
                 const opt = document.createElement('option');
                 opt.value = id; opt.textContent = SENSORES_ABANDO[id];
+                if (id === currentVal) opt.selected = true;
                 sel.appendChild(opt);
             });
         }
 
         function updateCharts(sid) {
+            if (!sid) return;
             document.getElementById('chartsPlaceholder').classList.add('hidden');
             document.getElementById('actualCharts').classList.remove('hidden');
             document.getElementById('sensorTitle').textContent = SENSORES_ABANDO[sid];
@@ -342,10 +352,14 @@
         function showTab(id) {
             ['calidad', 'analisis', 'ranking'].forEach(t => {
                 document.getElementById('sec-' + t).classList.add('hidden');
-                document.getElementById('tab-' + t).classList.remove('active-tab');
+                const btn = document.getElementById('tab-' + t);
+                btn.classList.remove('active-tab');
+                btn.classList.add('text-slate-400');
             });
             document.getElementById('sec-' + id).classList.remove('hidden');
-            document.getElementById('tab-' + id).classList.add('active-tab');
+            const activeBtn = document.getElementById('tab-' + id);
+            activeBtn.classList.add('active-tab');
+            activeBtn.classList.remove('text-slate-400');
         }
 
         function setLoading(l) {
