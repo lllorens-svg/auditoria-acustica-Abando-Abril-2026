@@ -30,6 +30,13 @@ SENSORES_ABANDO = {
     'BI-RUI-C034': 'ARETXABALETA 6', 'BI-RUI-P009': 'ALAMEDA RECALDE'
 }
 
+# --- LISTA DE FESTIVOS (Ejemplo simplificado) ---
+FESTIVOS_BILBAO = [
+    '2026-01-01', '2026-01-06', '2026-03-19', '2026-04-02', '2026-04-03', 
+    '2026-04-06', '2026-05-01', '2026-07-25', '2026-08-15', '2026-10-12', 
+    '2026-11-01', '2026-12-06', '2026-12-08', '2026-12-25'
+]
+
 # --- FUNCIONES DE UTILIDAD ---
 
 def limpiar_texto(texto):
@@ -41,41 +48,56 @@ def clasificar_periodo(dt):
     if not isinstance(dt, datetime): return "N/A"
     return "DIA" if 7 <= dt.hour < 23 else "NOCHE"
 
+def es_dia_especial(dt):
+    # Viernes(4), Sábado(5), Domingo(6)
+    if dt.weekday() in [4, 5, 6]:
+        return True
+    fecha_str = dt.strftime('%Y-%m-%d')
+    if fecha_str in FESTIVOS_BILBAO:
+        return True
+    # Víspera (día siguiente es festivo)
+    vispera = (dt + timedelta(days=1)).strftime('%Y-%m-%d')
+    if vispera in FESTIVOS_BILBAO:
+        return True
+    return False
+
 def procesar_csv(csv_content):
-    # Detección flexible de separador para archivos locales o remotos
     try:
         df = pd.read_csv(StringIO(csv_content), sep=';', encoding='utf-8-sig')
-        if len(df.columns) < 2: # Re-intento si el separador es coma
+        if len(df.columns) < 2:
             df = pd.read_csv(StringIO(csv_content), sep=',', encoding='utf-8-sig')
     except:
         df = pd.read_csv(StringIO(csv_content), sep=None, engine='python', encoding='utf-8-sig')
         
     df.columns = [limpiar_texto(c) for c in df.columns]
     
-    # Identificación dinámica de columnas basada en el CSV de Bilbao
     c_t = next(c for c in ['FECHA/HORA MEDICION', 'HORA', 'FECHA'] if c in df.columns)
     c_v = next(c for c in ['DECIBELIOS MEDIDOS', 'LAEQ', 'DECIBELIOS'] if c in df.columns)
     c_id = next(c for c in ['CODIGO', 'ID_SONOMETRO', 'ID'] if c in df.columns)
     
-    # El formato ISO (2026-04-01 00:00:00.71) se lee mejor con dayfirst=False o automático
     df['FECHA_DT'] = pd.to_datetime(df[c_t], errors='coerce')
-    
-    # Limpieza de valores numéricos
     df['DECIBELIOS'] = pd.to_numeric(df[c_v].astype(str).str.replace(',', '.'), errors='coerce')
     
-    # Filtrado por distrito (Solo sensores en el diccionario de Abando)
     df = df[df[c_id].isin(SENSORES_ABANDO.keys())]
-    
     df = df.dropna(subset=['FECHA_DT', 'DECIBELIOS'])
     df['PERIODO'] = df['FECHA_DT'].apply(clasificar_periodo)
     return df.sort_values('FECHA_DT'), c_id
 
 # --- GENERACIÓN DE GRÁFICOS ---
 
+def aplicar_sombreado_especial(ax, f_ini_dt, f_fin_dt):
+    current = f_ini_dt.replace(hour=0, minute=0, second=0)
+    while current <= f_fin_dt:
+        if es_dia_especial(current):
+            ax.axvspan(current, current + timedelta(days=1), color='gray', alpha=0.15, zorder=0)
+        current += timedelta(days=1)
+
 def generar_grafico_unico(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
     fig, ax = plt.subplots(figsize=(12, 6))
     df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
     df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
+
+    aplicar_sombreado_especial(ax, f_ini_dt, f_fin_dt)
 
     for i in range(len(df_plot)-1):
         p1, p2 = df_plot.iloc[i], df_plot.iloc[i+1]
@@ -92,6 +114,38 @@ def generar_grafico_unico(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
     plt.xticks(rotation=45)
     return fig
 
+def generar_grafico_dual(df_sel, nombre_calle, id_sensor, f_ini_dt, f_fin_dt):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    df_plot = df_sel.set_index('FECHA_DT').resample('15min').mean(numeric_only=True).reset_index()
+    df_plot['PERIODO'] = df_plot['FECHA_DT'].apply(clasificar_periodo)
+    
+    # Sombreado en ambos paneles
+    aplicar_sombreado_especial(ax1, f_ini_dt, f_fin_dt)
+    aplicar_sombreado_especial(ax2, f_ini_dt, f_fin_dt)
+
+    # Panel Día
+    df_dia = df_plot.copy()
+    df_dia.loc[df_dia['PERIODO'] != 'DIA', 'DECIBELIOS'] = np.nan
+    ax1.plot(df_dia['FECHA_DT'], df_dia['DECIBELIOS'], color='#f39c12', linewidth=1.5)
+    ax1.axhline(65, color='red', linestyle='--', alpha=0.8)
+    ax1.set_title(f"Periodo Diurno - {nombre_calle}", fontsize=11)
+    ax1.set_ylim(40, 95)
+    ax1.grid(True, alpha=0.2)
+
+    # Panel Noche
+    df_noche = df_plot.copy()
+    df_noche.loc[df_noche['PERIODO'] != 'NOCHE', 'DECIBELIOS'] = np.nan
+    ax2.plot(df_noche['FECHA_DT'], df_noche['DECIBELIOS'], color='#3498db', linewidth=1.5)
+    ax2.axhline(55, color='red', linestyle='--', alpha=0.8)
+    ax2.set_title(f"Periodo Nocturno - {nombre_calle}", fontsize=11)
+    ax2.set_ylim(40, 95)
+    ax2.grid(True, alpha=0.2)
+
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m'))
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    return fig
+
 # --- APLICACIÓN PRINCIPAL ---
 
 def main():
@@ -100,10 +154,8 @@ def main():
     
     df_raw, c_id = None, None
     
-    # --- PANEL DE CONTROL LATERAL ---
     st.sidebar.header("📂 Gestión de Datos")
     
-    # Detección de entorno (Simulación para el usuario)
     entorno = "Nube (Streamlit Cloud)" if "streamlit" in str(st.sidebar) else "Local (Mac)"
     st.sidebar.caption(f"Ejecutando en: {entorno}")
     
@@ -115,12 +167,11 @@ def main():
         if st.sidebar.button("🚀 Sincronizar con Bilbao"):
             try:
                 with st.spinner('Intentando conectar con Open Data Bilbao...'):
-                    # Timeout generoso para el servidor municipal
                     r = requests.get(url, timeout=20)
                     r.raise_for_status()
                     df_raw, c_id = procesar_csv(r.text)
                     st.success("✅ Sincronización automática exitosa")
-            except Exception as e:
+            except:
                 st.error("❌ Error de conexión.")
                 st.warning("El Firewall del ayuntamiento suele bloquear accesos desde la nube. Por favor, descarga el CSV y usa la 'Carga Manual'.")
     else:
@@ -133,9 +184,7 @@ def main():
             except Exception as e:
                 st.error(f"Error al leer el archivo: {e}")
 
-    # --- CUERPO DEL DASHBOARD ---
     if df_raw is not None:
-        # Filtros temporales
         f_min_data = df_raw['FECHA_DT'].min().date()
         f_max_data = df_raw['FECHA_DT'].max().date()
         
@@ -149,7 +198,6 @@ def main():
         df_f = df_raw[(df_raw['FECHA_DT'] >= f_ini_dt) & (df_raw['FECHA_DT'] <= f_fin_dt)].copy()
         dias_calculados = max((f_fin - f_ini).days + 1, 1)
 
-        # Tabs en el orden solicitado: Calidad -> Gráficos -> Rankings
         tabs = st.tabs(["🛡️ Auditoría de Calidad", "📉 Análisis Temporal", "🏆 Rankings y Picos"])
 
         # TAB 1: CALIDAD
@@ -192,7 +240,7 @@ def main():
             st.dataframe(df_q[['Calle', 'ID', 'Muestras', '% Calidad', 'Estado']], 
                          hide_index=True, use_container_width=True)
 
-        # TAB 2: GRÁFICOS
+        # TAB 2: GRÁFICOS (Separación por periodo larga duración)
         with tabs[1]:
             st.header("📉 Evolución de Niveles Sonoros")
             sel_id = st.selectbox("Selecciona punto de medida", 
@@ -201,7 +249,10 @@ def main():
             
             df_sensor = df_f[df_f[c_id] == sel_id]
             if not df_sensor.empty:
-                st.pyplot(generar_grafico_unico(df_sensor, SENSORES_ABANDO[sel_id], sel_id, f_ini_dt, f_fin_dt))
+                if dias_calculados > 7:
+                    st.pyplot(generar_grafico_dual(df_sensor, SENSORES_ABANDO[sel_id], sel_id, f_ini_dt, f_fin_dt))
+                else:
+                    st.pyplot(generar_grafico_unico(df_sensor, SENSORES_ABANDO[sel_id], sel_id, f_ini_dt, f_fin_dt))
             else:
                 st.warning("No hay datos para este sensor en las fechas elegidas.")
 
@@ -213,10 +264,8 @@ def main():
             for sid, calle in SENSORES_ABANDO.items():
                 ds = df_f[df_f[c_id] == sid]
                 if not ds.empty:
-                    # Pico día
                     df_d = ds[ds['PERIODO'] == 'DIA']
                     pico_d = df_d.loc[df_d['DECIBELIOS'].idxmax()] if not df_d.empty else None
-                    # Pico noche
                     df_n = ds[ds['PERIODO'] == 'NOCHE']
                     pico_n = df_n.loc[df_n['DECIBELIOS'].idxmax()] if not df_n.empty else None
                     
