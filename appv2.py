@@ -10,7 +10,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
     <style>
-        .active-tab { border-bottom: 4px solid #ef4444; color: #ef4444; }
+        .active-tab { border-bottom: px solid #ef4444; color: #ef4444; }
         .chart-wrapper { height: 350px; position: relative; }
         .loading-spinner {
             border: 3px solid rgba(255,255,255,0.3);
